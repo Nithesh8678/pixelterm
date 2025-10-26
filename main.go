@@ -1,23 +1,41 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"image"
 	_ "image/jpeg" // Register JPEG format
 	_ "image/png"  // Register PNG format
 	"os"
-	"path/filepath"
+	"strings"
 )
 
 func main() {
+	// Define command-line flags
+	width := flag.Int("width", 100, "output width in characters")
+	scale := flag.Float64("scale", 0.15, "scale factor (affects height calculation)")
+	color := flag.Bool("color", true, "enable colored ASCII output")
+	save := flag.String("save", "", "save output to file instead of printing to stdout")
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [options] <image-file>\n\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "Options:\n")
+		flag.PrintDefaults()
+		fmt.Fprintf(os.Stderr, "\nExample:\n")
+		fmt.Fprintf(os.Stderr, "  %s -width 80 -color=false image.png\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s -save output.txt image.jpg\n", os.Args[0])
+	}
+
+	flag.Parse()
+
 	// Check if an image file path was provided
-	if len(os.Args) < 2 {
-		fmt.Fprintf(os.Stderr, "Usage: %s <image-file>\n", filepath.Base(os.Args[0]))
+	if flag.NArg() < 1 {
+		fmt.Fprintf(os.Stderr, "Error: No image file specified\n\n")
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	// Get the image file path from command line arguments
-	imagePath := os.Args[1]
+	imagePath := flag.Arg(0)
 
 	// Open the image file
 	file, err := os.Open(imagePath)
@@ -28,33 +46,42 @@ func main() {
 	defer file.Close()
 
 	// Decode the image (format is auto-detected based on registered decoders)
-	img, format, err := image.Decode(file)
+	img, _, err := image.Decode(file)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Failed to decode image file '%s': %v\n", imagePath, err)
 		fmt.Fprintf(os.Stderr, "Hint: Ensure the file is a valid PNG or JPEG image.\n")
 		os.Exit(1)
 	}
 
-	// Get image dimensions
-	bounds := img.Bounds()
-	width := bounds.Dx()
-	height := bounds.Dy()
+	// Generate ASCII art based on color flag
+	var art []string
+	if *color {
+		art = colorASCII(img, *width, *scale)
+	} else {
+		art = toASCII(img, *width, *scale)
+	}
 
-	// Print the image dimensions
-	fmt.Printf("Image format: %s\n", format)
-	fmt.Printf("Width: %d pixels\n", width)
-	fmt.Printf("Height: %d pixels\n", height)
-
-	// Convert to colored ASCII art and print
-	coloredArt := colorASCII(img, 80)
-	for _, line := range coloredArt {
-		fmt.Println(line)
+	// Output to file or stdout
+	if *save != "" {
+		// Write to file
+		output := strings.Join(art, "\n") + "\n"
+		err := os.WriteFile(*save, []byte(output), 0644)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: Failed to write to file '%s': %v\n", *save, err)
+			os.Exit(1)
+		}
+		fmt.Printf("ASCII art saved to '%s'\n", *save)
+	} else {
+		// Print to stdout
+		for _, line := range art {
+			fmt.Println(line)
+		}
 	}
 }
 
-// toASCII converts an image to ASCII art with the specified output width.
+// toASCII converts an image to ASCII art with the specified output width and scale.
 // The aspect ratio is preserved, accounting for typical terminal character height.
-func toASCII(img image.Image, width int) []string {
+func toASCII(img image.Image, width int, scale float64) []string {
 	// ASCII palette from dark to light
 	palette := "@%#*+=-:. "
 
@@ -62,8 +89,8 @@ func toASCII(img image.Image, width int) []string {
 	imgWidth := bounds.Dx()
 	imgHeight := bounds.Dy()
 
-	// Calculate output height with character aspect ratio correction (~0.5)
-	height := int(float64(imgHeight) * float64(width) / float64(imgWidth) * 0.5)
+	// Calculate output height with character aspect ratio correction and scale
+	height := int(float64(imgHeight) * float64(width) / float64(imgWidth) * scale)
 
 	// Prevent division by zero
 	if height == 0 {
@@ -97,7 +124,7 @@ func toASCII(img image.Image, width int) []string {
 
 // colorASCII converts an image to colored ASCII art using truecolor ANSI escapes.
 // Character selection is based on grayscale, but colors are preserved from the original image.
-func colorASCII(img image.Image, width int) []string {
+func colorASCII(img image.Image, width int, scale float64) []string {
 	// ASCII palette from dark to light
 	palette := "@%#*+=-:. "
 
@@ -105,8 +132,8 @@ func colorASCII(img image.Image, width int) []string {
 	imgWidth := bounds.Dx()
 	imgHeight := bounds.Dy()
 
-	// Calculate output height with character aspect ratio correction (~0.5)
-	height := int(float64(imgHeight) * float64(width) / float64(imgWidth) * 0.5)
+	// Calculate output height with character aspect ratio correction and scale
+	height := int(float64(imgHeight) * float64(width) / float64(imgWidth) * scale)
 
 	// Prevent division by zero
 	if height == 0 {
