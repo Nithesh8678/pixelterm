@@ -45,9 +45,9 @@ func main() {
 	fmt.Printf("Width: %d pixels\n", width)
 	fmt.Printf("Height: %d pixels\n", height)
 
-	// Convert to ASCII art and print
-	asciiArt := toASCII(img, 80)
-	for _, line := range asciiArt {
+	// Convert to colored ASCII art and print
+	coloredArt := colorASCII(img, 80)
+	for _, line := range coloredArt {
 		fmt.Println(line)
 	}
 }
@@ -88,6 +88,59 @@ func toASCII(img image.Image, width int) []string {
 			// Map brightness to ASCII character (invert: darker = dense chars)
 			charIndex := int(gray) * (len(palette) - 1) / 255
 			line += string(palette[charIndex])
+		}
+		result[y] = line
+	}
+
+	return result
+}
+
+// colorASCII converts an image to colored ASCII art using truecolor ANSI escapes.
+// Character selection is based on grayscale, but colors are preserved from the original image.
+func colorASCII(img image.Image, width int) []string {
+	// ASCII palette from dark to light
+	palette := "@%#*+=-:. "
+
+	bounds := img.Bounds()
+	imgWidth := bounds.Dx()
+	imgHeight := bounds.Dy()
+
+	// Calculate output height with character aspect ratio correction (~0.5)
+	height := int(float64(imgHeight) * float64(width) / float64(imgWidth) * 0.5)
+
+	// Prevent division by zero
+	if height == 0 {
+		height = 1
+	}
+
+	result := make([]string, height)
+
+	// Process each row of the output ASCII art
+	for y := 0; y < height; y++ {
+		line := ""
+		for x := 0; x < width; x++ {
+			// Map ASCII coordinates back to image coordinates
+			imgX := x * imgWidth / width
+			imgY := y * imgHeight / height
+
+			// Get pixel color
+			r, g, b, _ := img.At(imgX, imgY).RGBA()
+			
+			// Convert to 8-bit RGB values
+			r8 := uint8(r >> 8)
+			g8 := uint8(g >> 8)
+			b8 := uint8(b >> 8)
+
+			// Convert to grayscale for character selection
+			gray := (299*r + 587*g + 114*b) / 1000 / 256
+
+			// Map brightness to ASCII character
+			charIndex := int(gray) * (len(palette) - 1) / 255
+			char := palette[charIndex]
+
+			// Build colored character with ANSI truecolor escape
+			// Format: \x1b[38;2;<r>;<g>;<b>m<char>\x1b[0m
+			line += fmt.Sprintf("\x1b[38;2;%d;%d;%dm%c\x1b[0m", r8, g8, b8, char)
 		}
 		result[y] = line
 	}
