@@ -81,6 +81,7 @@ func main() {
 
 // toASCII converts an image to ASCII art with the specified output width and scale.
 // The aspect ratio is preserved, accounting for typical terminal character height.
+// Uses goroutines to parallelize row processing for improved performance.
 func toASCII(img image.Image, width int, scale float64) []string {
 	// ASCII palette from dark to light
 	palette := "@%#*+=-:. "
@@ -99,31 +100,95 @@ func toASCII(img image.Image, width int, scale float64) []string {
 
 	result := make([]string, height)
 
-	// Process each row of the output ASCII art
-	for y := 0; y < height; y++ {
-		line := ""
-		for x := 0; x < width; x++ {
-			// Map ASCII coordinates back to image coordinates
-			imgX := x * imgWidth / width
-			imgY := y * imgHeight / height
-
-			// Get pixel color and convert to grayscale
-			r, g, b, _ := img.At(imgX, imgY).RGBA()
-			// Use standard luminance formula (0.299*R + 0.587*G + 0.114*B)
-			gray := (299*r + 587*g + 114*b) / 1000 / 256
-
-			// Map brightness to ASCII character (invert: darker = dense chars)
-			charIndex := int(gray) * (len(palette) - 1) / 255
-			line += string(palette[charIndex])
-		}
-		result[y] = line
+	// Type to hold processed row results with original index for ordering
+	type rowResult struct {
+		index int
+		line  string
 	}
+
+	// Buffered channel to collect results from worker goroutines
+	// Buffer size equals height to prevent blocking
+	resultChan := make(chan rowResult, height)
+
+	// Process each row in parallel using goroutines
+	for y := 0; y < height; y++ {
+		go func(rowIndex int) {
+			line := ""
+			
+			// Calculate source image row boundaries for this output row
+			imgY := rowIndex * imgHeight / height
+			imgYEnd := (rowIndex + 1) * imgHeight / height
+			if imgYEnd > imgHeight {
+				imgYEnd = imgHeight
+			}
+
+			for x := 0; x < width; x++ {
+				// Calculate source image column boundaries for this character
+				imgX := x * imgWidth / width
+				imgXEnd := (x + 1) * imgWidth / width
+				if imgXEnd > imgWidth {
+					imgXEnd = imgWidth
+				}
+
+				// Sample block average instead of single pixel
+				var rSum, gSum, bSum uint64
+				pixelCount := 0
+
+				// Sample the block with stride to avoid processing every pixel
+				// Use stride of max(1, blockWidth/3) to get representative samples
+				strideX := (imgXEnd - imgX) / 3
+				if strideX < 1 {
+					strideX = 1
+				}
+				strideY := (imgYEnd - imgY) / 3
+				if strideY < 1 {
+					strideY = 1
+				}
+
+				for py := imgY; py < imgYEnd; py += strideY {
+					for px := imgX; px < imgXEnd; px += strideX {
+						r, g, b, _ := img.At(px, py).RGBA()
+						rSum += uint64(r)
+						gSum += uint64(g)
+						bSum += uint64(b)
+						pixelCount++
+					}
+				}
+
+				// Calculate average color
+				if pixelCount > 0 {
+					rSum /= uint64(pixelCount)
+					gSum /= uint64(pixelCount)
+					bSum /= uint64(pixelCount)
+				}
+
+				// Convert to grayscale using standard luminance formula
+				gray := (299*rSum + 587*gSum + 114*bSum) / 1000 / 256
+
+				// Map brightness to ASCII character
+				charIndex := int(gray) * (len(palette) - 1) / 255
+				line += string(palette[charIndex])
+			}
+
+			// Send result with index to preserve order
+			resultChan <- rowResult{index: rowIndex, line: line}
+		}(y)
+	}
+
+	// Collect results from all goroutines
+	for i := 0; i < height; i++ {
+		res := <-resultChan
+		result[res.index] = res.line
+	}
+
+	close(resultChan)
 
 	return result
 }
 
 // colorASCII converts an image to colored ASCII art using truecolor ANSI escapes.
 // Character selection is based on grayscale, but colors are preserved from the original image.
+// Uses goroutines to parallelize row processing for improved performance.
 func colorASCII(img image.Image, width int, scale float64) []string {
 	// ASCII palette from dark to light
 	palette := "@%#*+=-:. "
@@ -142,35 +207,97 @@ func colorASCII(img image.Image, width int, scale float64) []string {
 
 	result := make([]string, height)
 
-	// Process each row of the output ASCII art
-	for y := 0; y < height; y++ {
-		line := ""
-		for x := 0; x < width; x++ {
-			// Map ASCII coordinates back to image coordinates
-			imgX := x * imgWidth / width
-			imgY := y * imgHeight / height
-
-			// Get pixel color
-			r, g, b, _ := img.At(imgX, imgY).RGBA()
-			
-			// Convert to 8-bit RGB values
-			r8 := uint8(r >> 8)
-			g8 := uint8(g >> 8)
-			b8 := uint8(b >> 8)
-
-			// Convert to grayscale for character selection
-			gray := (299*r + 587*g + 114*b) / 1000 / 256
-
-			// Map brightness to ASCII character
-			charIndex := int(gray) * (len(palette) - 1) / 255
-			char := palette[charIndex]
-
-			// Build colored character with ANSI truecolor escape
-			// Format: \x1b[38;2;<r>;<g>;<b>m<char>\x1b[0m
-			line += fmt.Sprintf("\x1b[38;2;%d;%d;%dm%c\x1b[0m", r8, g8, b8, char)
-		}
-		result[y] = line
+	// Type to hold processed row results with original index for ordering
+	type rowResult struct {
+		index int
+		line  string
 	}
+
+	// Buffered channel to collect results from worker goroutines
+	// Buffer size equals height to prevent blocking
+	resultChan := make(chan rowResult, height)
+
+	// Process each row in parallel using goroutines
+	for y := 0; y < height; y++ {
+		go func(rowIndex int) {
+			line := ""
+			
+			// Calculate source image row boundaries for this output row
+			imgY := rowIndex * imgHeight / height
+			imgYEnd := (rowIndex + 1) * imgHeight / height
+			if imgYEnd > imgHeight {
+				imgYEnd = imgHeight
+			}
+
+			for x := 0; x < width; x++ {
+				// Calculate source image column boundaries for this character
+				imgX := x * imgWidth / width
+				imgXEnd := (x + 1) * imgWidth / width
+				if imgXEnd > imgWidth {
+					imgXEnd = imgWidth
+				}
+
+				// Sample block average instead of single pixel
+				var rSum, gSum, bSum uint64
+				pixelCount := 0
+
+				// Sample the block with stride to avoid processing every pixel
+				// Use stride of max(1, blockWidth/3) to get representative samples
+				strideX := (imgXEnd - imgX) / 3
+				if strideX < 1 {
+					strideX = 1
+				}
+				strideY := (imgYEnd - imgY) / 3
+				if strideY < 1 {
+					strideY = 1
+				}
+
+				for py := imgY; py < imgYEnd; py += strideY {
+					for px := imgX; px < imgXEnd; px += strideX {
+						r, g, b, _ := img.At(px, py).RGBA()
+						rSum += uint64(r)
+						gSum += uint64(g)
+						bSum += uint64(b)
+						pixelCount++
+					}
+				}
+
+				// Calculate average color
+				if pixelCount > 0 {
+					rSum /= uint64(pixelCount)
+					gSum /= uint64(pixelCount)
+					bSum /= uint64(pixelCount)
+				}
+
+				// Convert to 8-bit RGB values
+				r8 := uint8(rSum >> 8)
+				g8 := uint8(gSum >> 8)
+				b8 := uint8(bSum >> 8)
+
+				// Convert to grayscale for character selection
+				gray := (299*rSum + 587*gSum + 114*bSum) / 1000 / 256
+
+				// Map brightness to ASCII character
+				charIndex := int(gray) * (len(palette) - 1) / 255
+				char := palette[charIndex]
+
+				// Build colored character with ANSI truecolor escape
+				// Format: \x1b[38;2;<r>;<g>;<b>m<char>\x1b[0m
+				line += fmt.Sprintf("\x1b[38;2;%d;%d;%dm%c\x1b[0m", r8, g8, b8, char)
+			}
+
+			// Send result with index to preserve order
+			resultChan <- rowResult{index: rowIndex, line: line}
+		}(y)
+	}
+
+	// Collect results from all goroutines
+	for i := 0; i < height; i++ {
+		res := <-resultChan
+		result[res.index] = res.line
+	}
+
+	close(resultChan)
 
 	return result
 }
